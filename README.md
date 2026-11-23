@@ -165,6 +165,8 @@ The tests in `tests/live.rs` run against a real `bao server -dev` and are ignore
 devenv shell -- cargo test -- --include-ignored
 ```
 
+Releases are published from GitHub Actions through crates.io [Trusted Publishing](https://crates.io/docs/trusted-publishing), without a stored API token. Bump the version in `Cargo.toml`, commit, and push a matching `v<version>` tag. Running the `Release` workflow by hand performs a dry run instead.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
