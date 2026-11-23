@@ -1,0 +1,2 @@
+# "OpenBao" is a product name, not an identifier that needs backticks.
+doc-valid-idents = ["OpenBao", ".."]

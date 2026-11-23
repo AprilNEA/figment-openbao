@@ -1,0 +1,45 @@
+[package]
+name = "figment-openbao"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/AprilNEA/figment-openbao"
+authors = ["AprilNEA <dev@aprilnea.me>"]
+description = "A Figment provider that loads startup configuration from OpenBao KV v2 secrets."
+readme = "README.md"
+keywords = ["figment", "openbao", "vault", "configuration", "secrets"]
+categories = ["config"]
+
+[features]
+default = ["rustls"]
+# The HTTP client needs a TLS backend: enable at least one of these.
+rustls = ["reqwest/rustls"]
+native-tls = ["reqwest/native-tls"]
+
+[dependencies]
+figment = { version = "0.10.19", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.13", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
+url = "2"
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+log = "0.4"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
+# The `log` feature lets a test observe events in a process without a subscriber.
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
