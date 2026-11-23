@@ -92,7 +92,7 @@ async fn token_auth_merges_owned_domains_into_one_document() {
     let report = snapshot.report();
     assert_eq!(report.location, format!("secret/{PREFIX}"));
     assert_eq!((report.keys(), report.unexpected()), (4, 1));
-    assert!(report.absent.is_empty());
+    assert_eq!(report.absent, [] as [&str; 0]);
     let summary: Vec<_> = report
         .domains
         .iter()
@@ -446,7 +446,7 @@ async fn a_malformed_manifest_or_ca_file_fails_before_any_request() {
         unsendable.load(&MANIFEST).await,
         Err(Error::InvalidToken)
     ));
-    assert!(seen.lock().unwrap().is_empty());
+    assert!(seen.lock().unwrap().is_empty(), "{seen:?}");
 }
 
 #[tokio::test]
