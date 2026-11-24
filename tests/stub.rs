@@ -235,6 +235,71 @@ async fn kubernetes_auth_logs_in_reads_with_the_login_token_and_revokes_it() {
 }
 
 #[tokio::test]
+async fn a_namespace_is_named_on_the_login_every_read_and_the_revocation() {
+    let jwt = service_account_token("service-jwt");
+    let namespaced = |request: String| format!("{request} @team/billing");
+    // Only namespaced requests are answered, so a request that leaves the
+    // namespace out asks the root namespace and finds nothing.
+    let (address, seen) = serve(vec![
+        (
+            namespaced("POST /v1/auth/kubernetes/login".into()),
+            login("accessor"),
+        ),
+        (
+            namespaced("POST /v1/auth/token/revoke-self".into()),
+            (204, Value::Null),
+        ),
+        (
+            namespaced(read("database")),
+            secret(json!({ "database_url": DATABASE_URL })),
+        ),
+        (
+            namespaced(read("app")),
+            secret(json!({ "listen": "0.0.0.0:8081" })),
+        ),
+    ])
+    .await;
+    let openbao = with_kubernetes(address, "kubernetes", &jwt).namespace("/team/billing/");
+
+    let snapshot = openbao.load(&MANIFEST).await.unwrap();
+
+    assert_eq!(
+        snapshot.report().location,
+        format!("team/billing/secret/{PREFIX}")
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 4);
+    for (request, _, _) in seen.iter() {
+        assert!(request.ends_with(" @team/billing"), "{request}");
+    }
+}
+
+#[tokio::test]
+async fn errors_and_logs_name_the_namespace_that_was_read() {
+    let (address, _) = serve(vec![
+        // `app` exists in the root namespace only.
+        (read("app"), secret(json!({ "listen": "0.0.0.0:8081" }))),
+        (
+            format!("{} @team", read("database")),
+            secret(json!({ "database_url": DATABASE_URL })),
+        ),
+    ])
+    .await;
+    let openbao = with_token(address).namespace("team");
+
+    let (result, output) = logged(openbao.load(&MANIFEST)).await;
+
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        format!("OpenBao config at team/secret/{PREFIX} is unusable: app: not found (HTTP 404)")
+    );
+    assert!(
+        output.contains(&format!("path=team/secret/{PREFIX}/database")),
+        "{output}"
+    );
+}
+
+#[tokio::test]
 async fn batch_login_tokens_are_not_revoked() {
     let jwt = service_account_token("service-jwt");
     let (address, seen) = serve(vec![
@@ -422,7 +487,7 @@ async fn a_login_response_without_a_token_is_invalid() {
 }
 
 #[tokio::test]
-async fn a_malformed_manifest_or_ca_file_fails_before_any_request() {
+async fn a_malformed_manifest_ca_file_namespace_or_token_fails_before_any_request() {
     const EMPTY: Manifest = Manifest::new(&[]);
     let (address, seen) = serve(vec![database()]).await;
 
@@ -440,6 +505,13 @@ async fn a_malformed_manifest_or_ca_file_fails_before_any_request() {
             .load(&MANIFEST)
             .await;
         assert!(matches!(result, Err(Error::CaFile)), "{result:?}");
+    }
+    for namespace in ["team//billing", "team/..", "team a"] {
+        let result = with_token(address.clone())
+            .namespace(namespace)
+            .load(&MANIFEST)
+            .await;
+        assert!(matches!(result, Err(Error::InvalidNamespace)), "{result:?}");
     }
     let unsendable = OpenBao::new(address, PREFIX, Auth::Token("inline\ntoken".into()));
     assert!(matches!(

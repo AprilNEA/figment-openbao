@@ -77,7 +77,7 @@ fn manifest_covers_every_setting() {
 }
 ```
 
-To build the connection in code instead of from the environment, use `OpenBao::new(address, prefix, auth)` with the `mount`, `ca_file`, and `timeout` setters.
+To build the connection in code instead of from the environment, use `OpenBao::new(address, prefix, auth)` with the `namespace`, `mount`, `ca_file`, and `timeout` setters.
 
 ## Environment variables
 
@@ -85,6 +85,7 @@ To build the connection in code instead of from the environment, use `OpenBao::n
 | --- | --- |
 | `BAO_ADDR` | Server address, `http` or `https`. Unset means OpenBao is not configured. |
 | `BAO_CACERT` | PEM file with additional trusted certificates. |
+| `BAO_NAMESPACE` | Namespace to read from, such as `team/billing`. Unset means the root namespace. |
 | `BAO_KV_MOUNT` | KV v2 mount. Defaults to `secret`. |
 | `BAO_KV_PATH` | Prefix of this service's secrets, such as `prod/billing`. Required. |
 | `BAO_AUTH_METHOD` | `token` (default) or `kubernetes`. |
@@ -94,7 +95,7 @@ To build the connection in code instead of from the environment, use `OpenBao::n
 | `BAO_K8S_MOUNT` | Kubernetes auth mount. Defaults to `kubernetes`. |
 | `BAO_K8S_TOKEN_PATH` | ServiceAccount token file. Defaults to `/var/run/secrets/openbao/token`. |
 
-Values are trimmed, and blank values count as unset. Without `BAO_TOKEN` and `BAO_TOKEN_PATH`, the `token` method reads `$HOME/.vault-token`, where `bao login` stores its token. `BAO_ADDR`, `BAO_CACERT`, and `BAO_TOKEN` have the same meaning as in the `bao` CLI; the other variables belong to this crate. No `VAULT_*` variable is read.
+Values are trimmed, and blank values count as unset. Without `BAO_TOKEN` and `BAO_TOKEN_PATH`, the `token` method reads `$HOME/.vault-token`, where `bao login` stores its token. `BAO_ADDR`, `BAO_CACERT`, `BAO_NAMESPACE`, `BAO_TOKEN`, and `BAO_TOKEN_PATH` have the same meaning as in the `bao` CLI; the other variables belong to this crate. No `VAULT_*` variable is read.
 
 ## Authentication
 
@@ -120,6 +121,16 @@ containers:
 ```
 
 The audience must match the one configured on the OpenBao Kubernetes auth role.
+
+## Namespaces
+
+Set `BAO_NAMESPACE`, or call `OpenBao::namespace`, to read from an OpenBao [namespace](https://openbao.org/docs/concepts/namespaces/) instead of the root namespace. Every request then carries the `X-Vault-Namespace` header: the Kubernetes login, each read, and the revocation. The auth mount, the role, its policies, and the secrets must therefore exist in that namespace.
+
+The path may be nested, such as `team/billing`. Surrounding whitespace and slashes are ignored, and an empty path selects the root namespace. A path with an empty, `.`, or `..` segment, or with a character other than visible ASCII, is rejected before any request.
+
+The namespace leads the location in errors, logs, and the report, as in `team/billing/secret/prod/billing`. OpenBao answers a namespace that does not exist with 404, so it is reported like a missing secret.
+
+Leaving the namespace unset is not a safe default when the secrets live in a namespace. A token that may read the root namespace then gets the document stored under the same mount and prefix there, without an error.
 
 ## Load semantics
 

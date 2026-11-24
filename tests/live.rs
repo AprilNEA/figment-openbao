@@ -127,11 +127,17 @@ impl DevServer {
 
     /// Write a secret from a file so nested values keep their JSON shape.
     fn put(&self, domain: &str, fields: &Value) {
+        self.put_in("", domain, fields);
+    }
+
+    /// [`put`](Self::put) into `namespace`; an empty path is the root namespace.
+    fn put_in(&self, namespace: &str, domain: &str, fields: &Value) {
         let file = self.home.path().join("payload.json");
         fs::write(&file, fields.to_string()).unwrap();
         self.bao(&[
             "kv",
             "put",
+            &format!("-namespace={namespace}"),
             "-mount=secret",
             &format!("{PREFIX}/{domain}"),
             &format!("@{}", file.display()),
@@ -288,4 +294,88 @@ async fn a_token_reads_only_what_its_policy_allows() {
         error.to_string(),
         unusable("database: permission denied (HTTP 403); app: permission denied (HTTP 403)")
     );
+}
+
+#[tokio::test]
+#[ignore = "needs the `bao` binary on PATH"]
+async fn a_namespace_selects_its_own_document() {
+    const NAMESPACE: &str = "team/billing";
+    let app = |listen: &str| json!({ "listen": listen, "tenant_ids": [] });
+    let listen = |snapshot: figment_openbao::Snapshot| {
+        Figment::from(snapshot)
+            .extract::<Settings>()
+            .unwrap()
+            .listen
+    };
+    let server = DevServer::start();
+    server.put("database", &database());
+    server.put("app", &app("root:1"));
+    server.bao(&["namespace", "create", "team"]);
+    server.bao(&["namespace", "create", "-namespace=team", "billing"]);
+    server.bao(&[
+        "secrets",
+        "enable",
+        &format!("-namespace={NAMESPACE}"),
+        "-path=secret",
+        "kv-v2",
+    ]);
+    server.put_in(NAMESPACE, "database", &database());
+    server.put_in(NAMESPACE, "app", &app("nested:1"));
+
+    // The same mount and prefix hold a different document in each namespace.
+    let root = server.openbao(ROOT_TOKEN);
+    assert_eq!(listen(root.load(&MANIFEST).await.unwrap()), "root:1");
+    let snapshot = root.namespace(NAMESPACE).load(&MANIFEST).await.unwrap();
+    assert_eq!(
+        snapshot.report().location,
+        format!("{NAMESPACE}/secret/{PREFIX}")
+    );
+    assert_eq!(listen(snapshot), "nested:1");
+
+    // A namespace that does not exist is answered like a missing secret.
+    let error = server
+        .openbao(ROOT_TOKEN)
+        .namespace("team/missing")
+        .load(&MANIFEST)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "OpenBao config at team/missing/secret/{PREFIX} is unusable: \
+             database: not found (HTTP 404); app: not found (HTTP 404)"
+        )
+    );
+
+    // A token issued inside the namespace reads there, and nowhere else.
+    let policy = server.home.path().join("reader.hcl");
+    fs::write(
+        &policy,
+        format!(r#"path "secret/data/{PREFIX}/*" {{ capabilities = ["read"] }}"#),
+    )
+    .unwrap();
+    server.bao(&[
+        "policy",
+        "write",
+        &format!("-namespace={NAMESPACE}"),
+        "reader",
+        policy.to_str().unwrap(),
+    ]);
+    let token = server.bao(&[
+        "token",
+        "create",
+        &format!("-namespace={NAMESPACE}"),
+        "-policy=reader",
+        "-ttl=10m",
+        "-field=token",
+    ]);
+    let token = token.trim();
+    let scoped = server.openbao(token);
+    let error = scoped.load(&MANIFEST).await.unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        unusable("database: permission denied (HTTP 403); app: permission denied (HTTP 403)")
+    );
+    let snapshot = scoped.namespace(NAMESPACE).load(&MANIFEST).await.unwrap();
+    assert_eq!(listen(snapshot), "nested:1");
 }

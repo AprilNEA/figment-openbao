@@ -30,6 +30,10 @@ pub enum Error {
     /// The token cannot be sent as an HTTP header value.
     #[error("OpenBao token is not a valid HTTP header value")]
     InvalidToken,
+    /// The namespace has an empty, `.`, or `..` segment, or a character that
+    /// is not visible ASCII.
+    #[error("OpenBao namespace is invalid")]
+    InvalidNamespace,
     /// The HTTP client could not be built.
     #[error("OpenBao client could not be initialized")]
     Client,
@@ -45,7 +49,8 @@ pub enum Error {
     /// At least one domain was unusable. No partial document is returned.
     #[error("OpenBao config at {location} is unusable: {}", join(.errors))]
     Domains {
-        /// `<mount>/<prefix>` taken from the connection settings.
+        /// `<mount>/<prefix>` taken from the connection settings, after the
+        /// namespace when one is set.
         location: String,
         /// Every unusable domain.
         errors: Vec<DomainError>,

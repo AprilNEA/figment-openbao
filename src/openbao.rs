@@ -104,6 +104,7 @@ impl fmt::Debug for Auth {
 pub struct OpenBao {
     address: Url,
     ca_file: Option<PathBuf>,
+    namespace: Option<String>,
     mount: String,
     prefix: String,
     auth: Auth,
@@ -116,6 +117,7 @@ impl fmt::Debug for OpenBao {
         f.debug_struct("OpenBao")
             .field("origin", &self.address.origin().ascii_serialization())
             .field("ca_file", &self.ca_file)
+            .field("namespace", &self.namespace)
             .field("mount", &self.mount)
             .field("prefix", &self.prefix)
             .field("auth", &self.auth)
@@ -134,11 +136,29 @@ impl OpenBao {
         Self {
             address,
             ca_file: None,
+            namespace: None,
             mount: DEFAULT_KV_MOUNT.into(),
             prefix: prefix.into().trim_matches('/').to_owned(),
             auth,
             timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Read from this namespace instead of the root namespace.
+    ///
+    /// Every request then carries the `X-Vault-Namespace` header, including
+    /// the Kubernetes login and the revocation, so the auth mount, the role,
+    /// and the secrets must exist in that namespace. The path may be nested,
+    /// such as `team/billing`. Surrounding whitespace and slashes are ignored,
+    /// and an empty path selects the root namespace.
+    ///
+    /// A path with an empty, `.`, or `..` segment, or with a character other
+    /// than visible ASCII, is rejected by [`load`](Self::load) before any
+    /// request.
+    #[must_use]
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = namespace_path(&namespace.into());
+        self
     }
 
     /// Use another KV v2 mount instead of `secret`.
@@ -171,6 +191,7 @@ impl OpenBao {
     /// | --- | --- |
     /// | `BAO_ADDR` | Server address, `http` or `https`. |
     /// | `BAO_CACERT` | PEM file with additional trusted certificates. |
+    /// | `BAO_NAMESPACE` | Namespace to read from. Unset means the root namespace. |
     /// | `BAO_KV_MOUNT` | KV v2 mount. Defaults to `secret`. |
     /// | `BAO_KV_PATH` | Prefix of this service's secrets. Required. |
     /// | `BAO_AUTH_METHOD` | `token` (default) or `kubernetes`. |
@@ -183,7 +204,8 @@ impl OpenBao {
     ///
     /// # Errors
     /// Reject variables that are not Unicode, an address that is not an HTTP
-    /// URL, a missing prefix or role, an unknown method, and a missing token.
+    /// URL, a namespace that cannot be sent, a missing prefix or role, an
+    /// unknown method, and a missing token.
     pub fn from_env() -> Result<Option<Self>, Error> {
         Self::from_lookup(env::var_os)
     }
@@ -210,6 +232,13 @@ impl OpenBao {
             .ok()
             .filter(|url| matches!(url.scheme(), "http" | "https"))
             .ok_or(Error::Invalid("BAO_ADDR"))?;
+        let namespace = var("BAO_NAMESPACE")?.and_then(|value| namespace_path(&value));
+        if namespace
+            .as_deref()
+            .is_some_and(|path| !is_namespace_path(path))
+        {
+            return Err(Error::Invalid("BAO_NAMESPACE"));
+        }
         let mount = path_var(var("BAO_KV_MOUNT")?).unwrap_or_else(|| DEFAULT_KV_MOUNT.into());
         let prefix = path_var(var("BAO_KV_PATH")?).ok_or(Error::Missing("BAO_KV_PATH"))?;
         let auth = match var("BAO_AUTH_METHOD")?.as_deref() {
@@ -230,6 +259,7 @@ impl OpenBao {
         Ok(Some(Self {
             address,
             ca_file: var("BAO_CACERT")?.map(PathBuf::from),
+            namespace,
             mount,
             prefix,
             auth,
@@ -238,12 +268,17 @@ impl OpenBao {
     }
 
     /// `<mount>/<prefix>`, as it appears in errors, logs, and the [`Report`].
+    /// A namespace comes first: `<namespace>/<mount>/<prefix>`.
     #[must_use]
     pub fn location(&self) -> String {
-        if self.prefix.is_empty() {
+        let path = if self.prefix.is_empty() {
             self.mount.clone()
         } else {
             format!("{}/{}", self.mount, self.prefix)
+        };
+        match &self.namespace {
+            Some(namespace) => format!("{namespace}/{path}"),
+            None => path,
         }
     }
 
@@ -264,9 +299,9 @@ impl OpenBao {
     ///
     /// # Errors
     /// Reject a malformed manifest, an unusable CA file or `ServiceAccount`
-    /// token, a rejected login, a load slower than the timeout, and any
-    /// unusable domain. Errors carry no configuration value, token, or server
-    /// message.
+    /// token, a namespace that cannot be sent, a rejected login, a load slower
+    /// than the timeout, and any unusable domain. Errors carry no
+    /// configuration value, token, or server message.
     pub async fn load(&self, manifest: &Manifest) -> Result<Snapshot, Error> {
         manifest.validate()?;
         let started = Instant::now();
@@ -342,6 +377,14 @@ impl OpenBao {
 
     fn client(&self) -> Result<Client, Error> {
         let mut client = Client::new(&self.address, self.ca_file.as_deref())?;
+        if let Some(namespace) = &self.namespace {
+            if !is_namespace_path(namespace) {
+                return Err(Error::InvalidNamespace);
+            }
+            client
+                .set_namespace(namespace)
+                .map_err(|_| Error::InvalidNamespace)?;
+        }
         if let Auth::Token(token) = &self.auth {
             client.set_token(token).map_err(|_| Error::InvalidToken)?;
         }
@@ -357,7 +400,7 @@ impl OpenBao {
         let secret = client.read_secret(&self.mount, &path).await;
         if let Ok(secret) = &secret {
             tracing::info!(
-                path = %format_args!("{}/{path}", self.mount),
+                path = %format_args!("{}/{}", self.location(), domain.name()),
                 version = secret.version,
                 keys = secret.fields.len(),
                 "OpenBao config domain loaded",
@@ -371,6 +414,20 @@ fn path_var(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim_matches('/').to_owned())
         .filter(|value| !value.is_empty())
+}
+
+/// A namespace path without surrounding whitespace and slashes. `None` is the
+/// root namespace.
+fn namespace_path(value: &str) -> Option<String> {
+    let path = value.trim_matches(|c: char| c == '/' || c.is_whitespace());
+    (!path.is_empty()).then(|| path.to_owned())
+}
+
+/// Whether OpenBao can name `path` and an HTTP header can carry it.
+fn is_namespace_path(path: &str) -> bool {
+    path.split('/').all(|segment| {
+        !matches!(segment, "" | "." | "..") && segment.chars().all(|c| c.is_ascii_graphic())
+    })
 }
 
 /// `BAO_TOKEN`, then `BAO_TOKEN_PATH`, then `$HOME/.vault-token`.

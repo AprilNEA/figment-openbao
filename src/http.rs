@@ -1,5 +1,6 @@
 //! The three OpenBao HTTP calls this crate makes: Kubernetes login, a KV v2
-//! read, and revoking the caller's own token.
+//! read, and revoking the caller's own token. All three name the namespace
+//! when one is set.
 //!
 //! Nothing here logs, and no error keeps the server's response text.
 
@@ -17,11 +18,13 @@ use url::Url;
 use crate::error::{Error, Failure};
 
 const TOKEN_HEADER: &str = "X-Vault-Token";
+const NAMESPACE_HEADER: &str = "X-Vault-Namespace";
 const USER_AGENT: &str = concat!("figment-openbao/", env!("CARGO_PKG_VERSION"));
 
 pub(crate) struct Client {
     http: reqwest::Client,
     base: Url,
+    namespace: Option<HeaderValue>,
     token: Option<HeaderValue>,
 }
 
@@ -64,8 +67,15 @@ impl Client {
         Ok(Self {
             http: builder.build().map_err(|_| Error::Client)?,
             base,
+            namespace: None,
             token: None,
         })
+    }
+
+    /// Send every later request to `namespace` instead of the root namespace.
+    pub(crate) fn set_namespace(&mut self, namespace: &str) -> Result<(), Failure> {
+        self.namespace = Some(HeaderValue::from_str(namespace).map_err(|_| Failure::CLIENT)?);
+        Ok(())
     }
 
     /// Send `token` with every later request.
@@ -129,6 +139,9 @@ impl Client {
         body: Option<String>,
     ) -> Result<Response, Failure> {
         let mut request = self.http.request(method, self.url(path)?);
+        if let Some(namespace) = &self.namespace {
+            request = request.header(NAMESPACE_HEADER, namespace);
+        }
         if let Some(token) = &self.token {
             request = request.header(TOKEN_HEADER, token);
         }

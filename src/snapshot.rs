@@ -60,7 +60,8 @@ impl Provider for Snapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Report {
-    /// `<mount>/<prefix>` the document was read from.
+    /// `<mount>/<prefix>` the document was read from, after the namespace
+    /// when one is set.
     pub location: String,
     /// Every domain, in manifest order.
     pub domains: Vec<DomainReport>,

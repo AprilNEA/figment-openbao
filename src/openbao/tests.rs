@@ -82,6 +82,10 @@ fn invalid_variables_are_named_without_their_values() {
             "BAO_KV_PATH must be set when BAO_ADDR is set",
         ),
         ("BAO_AUTH_METHOD", "approle", "BAO_AUTH_METHOD is invalid"),
+        ("BAO_NAMESPACE", "team//billing", "BAO_NAMESPACE is invalid"),
+        ("BAO_NAMESPACE", "team/../root", "BAO_NAMESPACE is invalid"),
+        ("BAO_NAMESPACE", "team a", "BAO_NAMESPACE is invalid"),
+        ("BAO_NAMESPACE", "团队", "BAO_NAMESPACE is invalid"),
     ] {
         let mut pairs = vec![base[0], base[1], ("BAO_KV_PATH", PREFIX)];
         pairs.retain(|(existing, _)| *existing != name);
@@ -96,6 +100,34 @@ fn invalid_variables_are_named_without_their_values() {
         parse(&non_unicode),
         Err(Error::NotUnicode("BAO_TOKEN"))
     ));
+}
+
+#[test]
+fn a_namespace_is_trimmed_and_leads_the_location() {
+    let base = [
+        ("BAO_ADDR", "https://openbao.example.test:8200"),
+        ("BAO_TOKEN", "inline-token"),
+        ("BAO_KV_PATH", PREFIX),
+    ];
+    for (namespace, location) in [
+        (" /team/billing/ ", "team/billing/secret/dev/billing"),
+        ("team", "team/secret/dev/billing"),
+        // A blank or root path reads the root namespace, like an unset variable.
+        (" ", "secret/dev/billing"),
+        ("/", "secret/dev/billing"),
+    ] {
+        let mut pairs = base.to_vec();
+        pairs.push(("BAO_NAMESPACE", namespace));
+        let parsed = parse(&vars(&pairs)).unwrap().unwrap();
+        assert_eq!(parsed.location(), location, "{namespace:?}");
+    }
+
+    let address = Url::parse("http://127.0.0.1:8200").unwrap();
+    let openbao = OpenBao::new(address, PREFIX, Auth::kubernetes("billing")).namespace("/team/");
+    assert_eq!(openbao.location(), "team/secret/dev/billing");
+    let output = format!("{openbao:?}");
+    assert!(output.contains(r#"namespace: Some("team")"#), "{output}");
+    assert_eq!(openbao.namespace("/").location(), "secret/dev/billing");
 }
 
 #[test]

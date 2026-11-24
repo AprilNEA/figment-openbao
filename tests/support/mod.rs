@@ -29,6 +29,8 @@ pub const MANIFEST: Manifest = Manifest::new(&[
 ]);
 
 /// Requests seen by the stub: `METHOD /path`, `X-Vault-Token`, and the JSON body.
+/// A request that names a namespace is recorded, and answered, as
+/// `METHOD /path @namespace`.
 pub type Seen = Arc<Mutex<Vec<(String, Option<String>, Value)>>>;
 
 #[derive(Clone)]
@@ -45,7 +47,13 @@ async fn respond(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let request = format!("{method} {}", uri.path());
+    let mut request = format!("{method} {}", uri.path());
+    if let Some(namespace) = headers
+        .get("X-Vault-Namespace")
+        .and_then(|value| value.to_str().ok())
+    {
+        request = format!("{request} @{namespace}");
+    }
     let token = headers
         .get("X-Vault-Token")
         .and_then(|value| value.to_str().ok())
